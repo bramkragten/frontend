@@ -1,8 +1,9 @@
-import { customElement, property } from "lit-element";
 import {
   HassRouterPage,
   RouterOptions,
 } from "../../../../../layouts/hass-router-page";
+import { customElement, property } from "lit-element";
+
 import { HomeAssistant } from "../../../../../types";
 import { navigate } from "../../../../../common/navigate";
 
@@ -54,6 +55,11 @@ class ZHAConfigDashboardRouter extends HassRouterPage {
           import(
             /* webpackChunkName: "zha-add-group-page" */ "./zha-add-group-page"
           ),
+      },
+      zigzag: {
+        tag: "zha-zigzag-page",
+        load: () =>
+          import(/* webpackChunkName: "zha-zigzag-page" */ "./zha-zigzag-page"),
       },
     },
   };

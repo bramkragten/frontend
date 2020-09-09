@@ -1,25 +1,27 @@
 import "@polymer/paper-item/paper-item";
 import "@polymer/paper-item/paper-item-body";
 import "@material/mwc-fab";
-import {
-  css,
-  CSSResultArray,
-  customElement,
-  html,
-  LitElement,
-  property,
-  TemplateResult,
-} from "lit-element";
 import "../../../../../components/ha-card";
 import "../../../../../components/ha-icon-next";
-import { haStyle } from "../../../../../resources/styles";
-import type { HomeAssistant, Route } from "../../../../../types";
 import "../../../ha-config-section";
-import { mdiNetwork, mdiFolderMultipleOutline, mdiPlus } from "@mdi/js";
 import "../../../../../layouts/hass-tabs-subpage";
+import "@material/mwc-button/mwc-button";
+
+import {
+  CSSResultArray,
+  LitElement,
+  TemplateResult,
+  css,
+  customElement,
+  html,
+  property,
+} from "lit-element";
+import type { HomeAssistant, Route } from "../../../../../types";
+import { mdiFolderMultipleOutline, mdiNetwork, mdiPlus } from "@mdi/js";
+
 import type { PageNavigation } from "../../../../../layouts/hass-tabs-subpage";
 import { computeRTL } from "../../../../../common/util/compute_rtl";
-import "@material/mwc-button/mwc-button";
+import { haStyle } from "../../../../../resources/styles";
 
 export const zhaTabs: PageNavigation[] = [
   {
@@ -30,6 +32,11 @@ export const zhaTabs: PageNavigation[] = [
   {
     translationKey: "ui.panel.config.zha.groups.caption",
     path: `/config/zha/groups`,
+    iconPath: mdiFolderMultipleOutline,
+  },
+  {
+    translationKey: "ui.panel.config.zha.zigzag.caption",
+    path: `/config/zha/zigzag`,
     iconPath: mdiFolderMultipleOutline,
   },
 ];

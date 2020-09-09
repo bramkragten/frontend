@@ -1908,6 +1908,9 @@
             "issue_zigbee_command": "Issue Zigbee Command",
             "help_command_dropdown": "Select a command to interact with."
           },
+          "zigzag": {
+            "caption": "Zigzag"
+          },
           "network": {
             "caption": "Network"
           },
