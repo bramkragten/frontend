@@ -1,36 +1,40 @@
 import {
-  CSSResult,
-  LitElement,
-  PropertyValues,
-  TemplateResult,
   css,
+  CSSResult,
   html,
   internalProperty,
+  LitElement,
   property,
+  PropertyValues,
+  TemplateResult,
 } from "lit-element";
 import { applyThemesOnElement } from "../../../../../common/dom/apply_themes_on_element";
+import { fireEvent } from "../../../../../common/dom/fire_event";
+import { debounce } from "../../../../../common/util/debounce";
+import "../../../../../components/entity/ha-state-label-badge";
+import { HomeAssistant, Route } from "../../../../../types";
+import { installResizeObserver } from "../../../../lovelace/common/install-resize-observer";
 import { DataSource, DataSourceFactory } from "./zha-datasource";
 import { Grapher, GrapherFactory, GrapherZigPosition } from "./zha-grapher";
-import { HomeAssistant, Route } from "../../../../../types";
-import type { HaStateLabelBadge } from "../../../../../components/entity/ha-state-label-badge";
-import "../../../../../components/entity/ha-state-label-badge";
-import { fireEvent } from "../../../../../common/dom/fire_event";
-
 import { Zag } from "./zha-zag";
 import { Zig } from "./zha-zig";
-import { debounce } from "../../../../../common/util/debounce";
-import { installResizeObserver } from "../../../../lovelace/common/install-resize-observer";
 
 const grapherContainerID = "grapherContainer";
 
 export abstract class ZigzagCore extends LitElement {
-  @internalProperty() private _badges?: HaStateLabelBadge[] = [];
+  @property({ attribute: false }) public hass!: HomeAssistant;
+
+  @property({ type: Boolean }) public isWide!: boolean;
+
+  @property({ type: Boolean }) public narrow!: boolean;
+
+  @property({ type: Object }) public route!: Route;
+
+  @internalProperty() private _zigs: Array<Zig> = [];
 
   private _dataSource!: DataSource;
 
   private _grapher!: Grapher;
-
-  private _HTMLElement: HTMLElement | null = null;
 
   private _initialised = false;
 
@@ -39,16 +43,6 @@ export abstract class ZigzagCore extends LitElement {
   private _zags: Array<Zag> = [];
 
   private _zigLayout: Array<GrapherZigPosition> = [];
-
-  private _zigs: Array<Zig> = [];
-
-  @property({ attribute: false }) public hass!: HomeAssistant;
-
-  @property({ type: Boolean }) public isWide!: boolean;
-
-  @property({ type: Boolean }) public narrow!: boolean;
-
-  @property({ type: Object }) public route!: Route;
 
   private async _attachObserver(_svgElement: HTMLElement): Promise<void> {
     if (!this._resizeObserver) {
@@ -59,31 +53,6 @@ export abstract class ZigzagCore extends LitElement {
       // Watch for changes in size
       this._resizeObserver.observe(_svgElement);
     }
-  }
-
-  private _createBadge(zig: Zig) {
-    // If the Zig has an entity, then we will use it to create a LovelaceBadge.
-    // if (zig.primary_entity) {
-    const element = document.createElement("ha-state-label-badge");
-    if (element.localName !== "hui-error-card") {
-      if (this.hass) {
-        element.hass = this.hass;
-        element.state = this.hass.states[zig.primary_entity as string];
-        // Hook up the onClick handler.
-        // The Grapher will hook up any events it wants to handle.
-        element.onclick = this._showMoreInfo;
-      }
-
-      // Store the Badge element in the Zig so we can easily find it for updating its position.
-      zig.badge = element;
-
-      // Add a Zig class so we can easily style the badge.
-      element.classList.add("zig");
-
-      // Add the badge to our collection.
-      this._badges = [...(this._badges as HaStateLabelBadge[]), zig.badge];
-    }
-    // }
   }
 
   private _createDatastore(): boolean {
@@ -107,46 +76,31 @@ export abstract class ZigzagCore extends LitElement {
     return false;
   }
 
-  private _initialise(): boolean {
+  private async _initialise(): Promise<boolean> {
     // Guard against double initialisation.
     if (this._initialised) {
-      return true;
+      return;
     }
 
-    // Check to see if we can find the html element where the graph is to be displayed.
-    if (this.shadowRoot) {
-      this._HTMLElement = this.shadowRoot.getElementById(grapherContainerID);
+    // Initalise the Grapher.
+    this._grapher.setContainer(
+      this.shadowRoot!.getElementById(grapherContainerID)! as HTMLElement
+    );
 
-      if (this._HTMLElement !== null && this._HTMLElement !== undefined) {
-        // Initalise the Grapher.
-        this._grapher.setContainer(
-          (this._HTMLElement as unknown) as HTMLElement
-        );
+    // Load the data.
+    [this._zigs, this._zags] = await this._dataSource.fetchData();
 
-        // Load the data.
-        // eslint-disable-next-line prettier/prettier
-        this._dataSource.fetchData(this._zigs, this._zags).then(() => {
-          // Create a set of badge entities, one for each zig.
-          this._zigs.forEach((_zig: Zig) => {
-            this._createBadge(_zig);
-          });
+    this._grapher.injectData(this._zigs, this._zags);
 
-          this._grapher.injectData(this._zigs, this._zags);
-
-          // Inject the zig layout if there is one
-          if (Array.isArray(this._zigLayout)) {
-            this._grapher.injectPositions(this._zigLayout);
-            this._zigLayout = [];
-          }
-
-          this._initialised = true;
-        });
-
-        this._attachObserver(this._HTMLElement.parentElement as HTMLElement);
-        this.requestUpdate();
-      }
+    // Inject the zig layout if there is one
+    if (Array.isArray(this._zigLayout)) {
+      this._grapher.injectPositions(this._zigLayout);
+      this._zigLayout = [];
     }
-    return this._initialised;
+
+    this._initialised = true;
+
+    this._attachObserver(this._HTMLElement.parentElement as HTMLElement);
   }
 
   private _resize() {
@@ -214,19 +168,21 @@ export abstract class ZigzagCore extends LitElement {
   // Called the first time the zigzag card is put into the DOM.
   protected firstUpdated(changedProps: PropertyValues): void {
     super.firstUpdated(changedProps);
-    if (this._initialise()) {
-      // TODO - How to handle failure.
-    }
+    this._initialise();
   }
 
-  protected render(): TemplateResult | void {
+  protected render(): TemplateResult {
     return html`
-      <div
-        id="${grapherContainerID}"
-        class="zigzag"
-        style="display: block; height: 100%; width: 100%;"
-      >
-        ${this._badges}
+      <div id="${grapherContainerID}" class="zigzag">
+        ${this._zigs.map(
+          (zig) =>
+            html`<ha-state-label-badge
+              .hass=${this.hass}
+              .state=${this.hass.states[zig.primary_entity as string]}
+              @click=${this._showMoreInfo}
+              class="zig"
+            ></ha-state-label-badge>`
+        )}
       </div>
     `;
   }
@@ -239,6 +195,12 @@ export abstract class ZigzagCore extends LitElement {
 
   public static get styles(): CSSResult {
     return css`
+      .zigzag {
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+
       svg.zags {
         width: 100%;
         height: 100%;
