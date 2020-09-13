@@ -30,7 +30,7 @@ export abstract class ZigzagCore extends LitElement {
 
   @property({ type: Object }) public route!: Route;
 
-  @internalProperty() private _zigs: Array<Zig> = [];
+  @internalProperty() private _zigs: Zig[] = [];
 
   private _dataSource!: DataSource;
 
@@ -39,8 +39,6 @@ export abstract class ZigzagCore extends LitElement {
   private _initialised = false;
 
   private _resizeObserver?: ResizeObserver;
-
-  private _zags: Array<Zag> = [];
 
   private _zigLayout: Array<GrapherZigPosition> = [];
 
@@ -88,9 +86,11 @@ export abstract class ZigzagCore extends LitElement {
     );
 
     // Load the data.
-    [this._zigs, this._zags] = await this._dataSource.fetchData();
+    const {zigs, zags} = await this._dataSource.fetchData();
+    
+    this._zigs = zigs;
 
-    this._grapher.injectData(this._zigs, this._zags);
+    this._grapher.injectData(this._zigs, zags);
 
     // Inject the zig layout if there is one
     if (Array.isArray(this._zigLayout)) {
