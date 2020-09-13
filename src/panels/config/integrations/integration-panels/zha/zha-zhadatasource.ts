@@ -133,11 +133,14 @@ export class ZHADataSource implements DataSource {
   }
 
   // Fetch the device data using web sockets
-  public async fetchData(zigs: Array<Zig>, zags: Array<Zag>): Promise<boolean> {
+  public async fetchData(): Promise<{zigs: Zig[], zags: Zag[]}> {
     const zhaDevices = await this._hass.callWS<Array<ZHADevice>>({
       type: ZHA_DEVICES_REQUEST,
     });
 
+    const zigs: Zig[] = [];
+    const zags: Zag[] = [];
+    
     this._mapZigs(zhaDevices, zigs);
     try {
       const zhaMapNeighbors = await this._hass.callWS<ZHAMAPResponse>({
@@ -149,6 +152,6 @@ export class ZHADataSource implements DataSource {
       // TODO If zha-map is not installed, warn the user.
     }
 
-    return true;
+    return {zigs, zags};
   }
 }
