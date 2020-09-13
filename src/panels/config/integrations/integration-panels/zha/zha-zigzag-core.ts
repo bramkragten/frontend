@@ -5,50 +5,50 @@ import {
   TemplateResult,
   css,
   html,
+  internalProperty,
   property,
 } from "lit-element";
+import { applyThemesOnElement } from "../../../../../common/dom/apply_themes_on_element";
 import { DataSource, DataSourceFactory } from "./zha-datasource";
-import { Grapher, GrapherFactory, GrapherLayout } from "./zha-grapher";
+import { Grapher, GrapherFactory, GrapherZigPosition } from "./zha-grapher";
 import { HomeAssistant, Route } from "../../../../../types";
+import type { HaStateLabelBadge } from "../../../../../components/entity/ha-state-label-badge";
+import "../../../../../components/entity/ha-state-label-badge";
+import { fireEvent } from "../../../../../common/dom/fire_event";
 
 import { Zag } from "./zha-zag";
-import { ZagDisplayConfig } from "./zha-zag-display-config";
 import { Zig } from "./zha-zig";
-import { ZigDisplayConfig } from "./zha-zig-display-config";
 import { debounce } from "../../../../../common/util/debounce";
 import { installResizeObserver } from "../../../../lovelace/common/install-resize-observer";
 
-const grapherSVGContainerID = "grapherContainer";
+const grapherContainerID = "grapherContainer";
 
 export abstract class ZigzagCore extends LitElement {
-  // Used to generate the zigzag network graph.
+  @internalProperty() private _badges?: HaStateLabelBadge[] = [];
+
   private _dataSource!: DataSource;
 
   private _grapher!: Grapher;
 
-  // Used to obtain the zig & zag data.
+  private _HTMLElement: HTMLElement | null = null;
+
   private _initialised = false;
 
   private _resizeObserver?: ResizeObserver;
 
-  private _svgElement: HTMLElement | null = null;
-
-  // Collection of zig objects (A Zigbee device).
   private _zags: Array<Zag> = [];
 
-  // Collection of zag objects (A connection between zigs).
-  private _zigLayout: Array<GrapherLayout> = [];
+  private _zigLayout: Array<GrapherZigPosition> = [];
 
-  // Used to reflect if we have had a successful initialisation of the zigzag card.
   private _zigs: Array<Zig> = [];
 
   @property({ attribute: false }) public hass!: HomeAssistant;
 
-  @property({ type: Object }) public route!: Route;
+  @property({ type: Boolean }) public isWide!: boolean;
 
   @property({ type: Boolean }) public narrow!: boolean;
 
-  @property({ type: Boolean }) public isWide!: boolean;
+  @property({ type: Object }) public route!: Route;
 
   private async _attachObserver(_svgElement: HTMLElement): Promise<void> {
     if (!this._resizeObserver) {
@@ -61,7 +61,32 @@ export abstract class ZigzagCore extends LitElement {
     }
   }
 
-  private _initaliseDatastore(): boolean {
+  private _createBadge(zig: Zig) {
+    // If the Zig has an entity, then we will use it to create a LovelaceBadge.
+    // if (zig.primary_entity) {
+    const element = document.createElement("ha-state-label-badge");
+    if (element.localName !== "hui-error-card") {
+      if (this.hass) {
+        element.hass = this.hass;
+        element.state = this.hass.states[zig.primary_entity as string];
+        // Hook up the onClick handler.
+        // The Grapher will hook up any events it wants to handle.
+        element.onclick = this._showMoreInfo;
+      }
+
+      // Store the Badge element in the Zig so we can easily find it for updating its position.
+      zig.badge = element;
+
+      // Add a Zig class so we can easily style the badge.
+      element.classList.add("zig");
+
+      // Add the badge to our collection.
+      this._badges = [...(this._badges as HaStateLabelBadge[]), zig.badge];
+    }
+    // }
+  }
+
+  private _createDatastore(): boolean {
     const _dataSource = DataSourceFactory.create(this.hass, "zha");
     if (_dataSource) {
       this._dataSource = _dataSource;
@@ -70,7 +95,7 @@ export abstract class ZigzagCore extends LitElement {
     return false;
   }
 
-  private _initaliseGrapher(): boolean {
+  private _createGrapher(): boolean {
     // Create a new Grapher
     const _grapher = GrapherFactory.create("d3");
 
@@ -90,35 +115,34 @@ export abstract class ZigzagCore extends LitElement {
 
     // Check to see if we can find the html element where the graph is to be displayed.
     if (this.shadowRoot) {
-      this._svgElement = this.shadowRoot.getElementById(grapherSVGContainerID);
+      this._HTMLElement = this.shadowRoot.getElementById(grapherContainerID);
 
-      if (this._svgElement !== null && this._svgElement !== undefined) {
+      if (this._HTMLElement !== null && this._HTMLElement !== undefined) {
         // Initalise the Grapher.
-        this._grapher.setSVGContainer(
-          (this._svgElement as unknown) as SVGSVGElement
-        );
-        this._grapher.updateConfig(
-          new ZigDisplayConfig(),
-          new ZagDisplayConfig()
+        this._grapher.setContainer(
+          (this._HTMLElement as unknown) as HTMLElement
         );
 
         // Load the data.
         // eslint-disable-next-line prettier/prettier
-        this._dataSource
-          .fetchData(this._zigs, this._zags)
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          .then((_loaded) => {
-            this._grapher.setData(this._zigs, this._zags);
-
-            // Inject the zig layout if there is one
-            if (Array.isArray(this._zigLayout)) {
-              this._grapher.injectLayout(this._zigLayout);
-              this._zigLayout = [];
-            }
-
-            this._initialised = true;
+        this._dataSource.fetchData(this._zigs, this._zags).then(() => {
+          // Create a set of badge entities, one for each zig.
+          this._zigs.forEach((_zig: Zig) => {
+            this._createBadge(_zig);
           });
-        this._attachObserver(this._svgElement.parentElement as HTMLElement);
+
+          this._grapher.injectData(this._zigs, this._zags);
+
+          // Inject the zig layout if there is one
+          if (Array.isArray(this._zigLayout)) {
+            this._grapher.injectPositions(this._zigLayout);
+            this._zigLayout = [];
+          }
+
+          this._initialised = true;
+        });
+
+        this._attachObserver(this._HTMLElement.parentElement as HTMLElement);
         this.requestUpdate();
       }
     }
@@ -134,7 +158,7 @@ export abstract class ZigzagCore extends LitElement {
   private async _restoreZigLayout(): Promise<void> {
     // Ask for the zigzag-layout
     const _result = await this.hass!.callWS<{
-      value: Array<GrapherLayout> | null;
+      value: Array<GrapherZigPosition> | null;
     }>({
       type: "frontend/get_user_data",
       key: "zigzag-layout",
@@ -143,7 +167,7 @@ export abstract class ZigzagCore extends LitElement {
     if (_result.value) {
       // If we are initalised then we inject the layout.
       if (this._initialised) {
-        this._grapher.injectLayout(_result.value);
+        this._grapher.injectPositions(_result.value);
       } else {
         // otherwise we store it to be injected later.
         this._zigLayout = _result.value;
@@ -151,10 +175,16 @@ export abstract class ZigzagCore extends LitElement {
     }
   }
 
+  private _showMoreInfo(ev) {
+    fireEvent(this, "hass-more-info", {
+      entityId: ev.currentTarget.state.entity_id,
+    });
+  }
+
   public connectedCallback(): void {
     super.connectedCallback();
 
-    if (!this._initaliseDatastore() || !this._initaliseGrapher()) {
+    if (!this._createDatastore() || !this._createGrapher()) {
       // TODO - raise an error.
     }
 
@@ -169,7 +199,7 @@ export abstract class ZigzagCore extends LitElement {
       this._resizeObserver.disconnect();
 
       if (this._grapher) {
-        const _layout: Array<GrapherLayout> = this._grapher.extractLayout();
+        const _layout: Array<GrapherZigPosition> = this._grapher.extractPositions();
 
         // Store Zigzag data
         await this.hass!.callWS({
@@ -189,120 +219,16 @@ export abstract class ZigzagCore extends LitElement {
     }
   }
 
-  public static getStubConfig(
-    hass: HomeAssistant,
-    entities: string[],
-    entitiesFallback: string[]
-  ): ZigzagConfig {
-    if (!hass || !entities || !entitiesFallback) {
-      return { type: "custom-card-zigzag" };
-    }
-    return { type: "custom:custom-card-zigzag" };
-  }
-
   protected render(): TemplateResult | void {
-    // TODO - Replace the embedded mdi icons with ones from home assistant <ha-svg-icon>.
-    // TODO - Clean up the html template and remove this the next line.
-    /* eslint-disable lit/no-invalid-html */
     return html`
-      <div style="height: 100%; width: 100%;">
-        <svg
-          class="grapherContainer"
-          id="${grapherSVGContainerID}"
-          style="height:100%; width:100%;"
-        >
-          <defs>
-            <symbol id="icon-mdi:zigbee">
-              <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                xmlns:xlink="http://www.w3.org/1999/xlink"
-                version="1.1"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  d="M4.06,6.15C3.97,6.17 3.88,6.22 3.8,6.28C2.66,7.9 2,9.87 2,12A10,10 0 0,0 12,22C15,22 17.68,20.68 19.5,18.6L17,18.85C14.25,19.15 11.45,19.19 8.66,18.96C7.95,18.94 7.24,18.76 6.59,18.45C5.73,18.06 5.15,17.23 5.07,16.29C5.06,16.13 5.12,16 5.23,15.87L7.42,13.6L15.03,5.7V5.6H10.84C8.57,5.64 6.31,5.82 4.06,6.15M20.17,17.5C20.26,17.47 20.35,17.44 20.43,17.39C21.42,15.83 22,14 22,12A10,10 0 0,0 12,2C9.22,2 6.7,3.13 4.89,4.97H5.17C8.28,4.57 11.43,4.47 14.56,4.65C15.5,4.64 16.45,4.82 17.33,5.17C18.25,5.53 18.89,6.38 19,7.37C19,7.53 18.93,7.7 18.82,7.82L9.71,17.19L9,17.95V18.06H13.14C15.5,18 17.84,17.81 20.17,17.5Z"
-                />
-              </svg>
-            </symbol>
-            <symbol id="icon-mdi:radio-tower">
-              <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                xmlns:xlink="http://www.w3.org/1999/xlink"
-                version="1.1"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  d="M12,10A2,2 0 0,1 14,12C14,12.5 13.82,12.94 13.53,13.29L16.7,22H14.57L12,14.93L9.43,22H7.3L10.47,13.29C10.18,12.94 10,12.5 10,12A2,2 0 0,1 12,10M12,8A4,4 0 0,0 8,12C8,12.5 8.1,13 8.28,13.46L7.4,15.86C6.53,14.81 6,13.47 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12C18,13.47 17.47,14.81 16.6,15.86L15.72,13.46C15.9,13 16,12.5 16,12A4,4 0 0,0 12,8M12,4A8,8 0 0,0 4,12C4,14.36 5,16.5 6.64,17.94L5.92,19.94C3.54,18.11 2,15.23 2,12A10,10 0 0,1 12,2A10,10 0 0,1 22,12C22,15.23 20.46,18.11 18.08,19.94L17.36,17.94C19,16.5 20,14.36 20,12A8,8 0 0,0 12,4Z"
-                />
-              </svg>
-            </symbol>
-            <symbol id="icon-mdi:router">
-              <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                xmlns:xlink="http://www.w3.org/1999/xlink"
-                version="1.1"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  d="M12 2C6.5 2 2 6.5 2 12C2 17.5 6.5 22 12 22C17.5 22 22 17.5 22 12C22 6.5 17.5 2 12 2M12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20M13 13V16H15L12 19L9 16H11V13M5 13H8V15L11 12L8 9V11H5M11 11V8H9L12 5L15 8H13V11M19 11H16V9L13 12L16 15V13H19"
-                />
-              </svg>
-            </symbol>
-            <symbol id="icon-mdi:crosshairs-question">
-              <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                xmlns:xlink="http://www.w3.org/1999/xlink"
-                version="1.1"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  d="M3.05 13H1V11H3.05C3.5 6.83 6.83 3.5 11 3.05V1H13V3.05C17.17 3.5 20.5 6.83 20.95 11H23V13H20.95C20.5 17.17 17.17 20.5 13 20.95V23H11V20.95C6.83 20.5 3.5 17.17 3.05 13M12 5C8.13 5 5 8.13 5 12S8.13 19 12 19 19 15.87 19 12 15.87 5 12 5M11.13 17.25H12.88V15.5H11.13V17.25M12 6.75C10.07 6.75 8.5 8.32 8.5 10.25H10.25C10.25 9.28 11.03 8.5 12 8.5S13.75 9.28 13.75 10.25C13.75 12 11.13 11.78 11.13 14.63H12.88C12.88 12.66 15.5 12.44 15.5 10.25C15.5 8.32 13.93 6.75 12 6.75Z"
-                />
-              </svg>
-              <symbol id="icon-mdi:lock">
-                <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  xmlns:xlink="http://www.w3.org/1999/xlink"
-                  version="1.1"
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z"
-                  />
-                </svg>
-              </symbol>
-            </symbol>
-          </defs>
-        </svg>
+      <div
+        id="${grapherContainerID}"
+        class="zigzag"
+        style="display: block; height: 100%; width: 100%;"
+      >
+        ${this._badges}
       </div>
     `;
-  }
-
-  public setConfig(config: ZigzagConfig): void {
-    if (!config || config.show_error) {
-      throw new Error(localize("common.invalid_configuration"));
-    }
-
-    if (config.test_gui) {
-      getLovelace().setEditMode(true);
-    }
-
-    this._config = { ...config };
   }
 
   // Called when connectedCallback is invoked.
@@ -311,56 +237,57 @@ export abstract class ZigzagCore extends LitElement {
     return true;
   }
 
-  // TODO - Use the Lovelace UI styles.
   public static get styles(): CSSResult {
     return css`
-      svg.zig {
-        overflow: visible;
+      svg.zags {
+        width: 100%;
+        height: 100%;
       }
 
-      circle.zig-background {
-        fill: var(--primary-background-color);
-        stroke-width: 2;
-        stroke: var(--secondary-background-color);
+      .zagpath {
+        stroke-width: 3;
+        fill: transparent;
       }
 
-      svg.highlight circle.zig-background {
-        fill: var(--primary-background-color);
-        stroke-width: 2;
-        stroke: var(--secondary-background-color);
+      .zag-lqi-poor {
+        stroke: var(--error-color);
       }
 
-      text.zig-label {
-        font-family: inherit;
-        font-weight: var(--paper-font-code2_-_font-weight);
-        fill: var(--primary-text-color);
+      .zag-lqi-moderate {
+        stroke: var(--warning-color);
       }
 
-      .zag {
-        stroke-width: 2;
+      .zag-lqi-good {
+        stroke: var(--success-color);
       }
 
-      .zig-lock {
-        opacity: 50%;
+      div.zigzag.dim .zag:not(.highlight) {
+        opacity: 0.1;
       }
 
-      text.zag-label {
-        font-family: inherit;
-        font-style: italic;
-        fill: var(--secondary-text-color);
-      }
-
-      .zags.dim > .zag:not(.highlight) {
-        opacity: 0.2;
-      }
-
-      .zigs.dim > .zig:not(.highlight) .zig-icon {
-        opacity: 0.2;
-      }
-
-      .zigs.dim > .zig:not(.highlight) .zig-lock {
-        opacity: 0.2;
+      div.zigzag.dim .zig:not(.highlight) {
+        filter: blur(5px);
       }
     `;
+  }
+
+  protected updated(changedProps: PropertyValues): void {
+    super.updated(changedProps);
+    if (!this.hass) {
+      return;
+    }
+
+    // If we have children elements then let them know about the update.
+    if (this._badges && changedProps.has("hass")) {
+      for (const element of this._badges) {
+        element.hass = this.hass;
+      }
+    }
+
+    const oldHass = changedProps.get("hass") as HomeAssistant | undefined;
+
+    if (!oldHass || oldHass.themes !== this.hass.themes) {
+      applyThemesOnElement(this, this.hass.themes);
+    }
   }
 }

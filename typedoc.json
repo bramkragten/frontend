@@ -1,0 +1,7 @@
+{
+  "inputFiles": ["./src/panels/config/integrations/integration-panels/zha"],
+  "mode": "modules",
+  "out": "typedoc",
+  "ignoreCompilerErrors": "true",
+  "excludeExternals": "true"
+}

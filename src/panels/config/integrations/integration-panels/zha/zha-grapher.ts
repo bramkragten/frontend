@@ -1,28 +1,29 @@
 import { D3Grapher } from "./zha-d3-grapher";
 import { Zag } from "./zha-zag";
-import { ZagDisplayConfig } from "./zha-zag-display-config";
+// import { ZagDisplayConfig } from "./zha-zag-display-config";
 import { Zig } from "./zha-zig";
-import { ZigDisplayConfig } from "./zha-zig-display-config";
+// import { ZigDisplayConfig } from "./zha-zig-display-config";
 
 export enum GrapherType {
   VIS = "vis",
   D3 = "d3",
+  CYTOSCAPE = "cytoscape",
 }
 
 export interface Grapher {
-  setData(zigs: Array<Zig>, zags: Array<Zag>): void;
-  setSVGContainer(container: SVGSVGElement): void;
-  updateConfig(
+  injectData(zigs: Array<Zig>, zags: Array<Zag>): void;
+  setContainer(container: HTMLElement): void;
+  /*   updateConfig(
     zigDisplayConfig: ZigDisplayConfig,
     zagDisplayConfig: ZagDisplayConfig
-  ): void;
-  extractLayout(): Array<GrapherLayout>;
-  injectLayout(_grapherLayout: Array<GrapherLayout>): void;
+  ): void; */
+  extractPositions(): Array<GrapherZigPosition>;
+  injectPositions(_grapherLayout: Array<GrapherZigPosition>): void;
   resize(): void;
 }
 
 // Used to hold the layout of locked zigs to be saved externally
-export interface GrapherLayout {
+export interface GrapherZigPosition {
   id: string;
   x: number;
   y: number;

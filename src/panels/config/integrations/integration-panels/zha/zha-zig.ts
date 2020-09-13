@@ -1,3 +1,5 @@
+import { HaStateLabelBadge } from "../../../../../components/entity/ha-state-label-badge";
+
 export enum ZigRole {
   Coordinator = "Coordinator",
   Router = "Router",
@@ -13,6 +15,8 @@ export enum zigPower {
 
 export interface Zig {
   id: string;
+  primary_entity?: string;
+  badge: HaStateLabelBadge;
   role: ZigRole.Unknown;
   name: string;
   ieee: string;

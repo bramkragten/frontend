@@ -1,117 +1,150 @@
-import * as d3 from "d3";
-
-// Note: This uses the latest release of D3 v5.
-// At the time the typescript definitions for D3 v6 were not available.
-import type { Grapher, GrapherLayout } from "./zha-grapher";
-import { Zig, ZigRole } from "./zha-zig";
-
+/* eslint-disable no-console */
+import {
+  forceCenter,
+  ForceCenter,
+  forceCollide,
+  forceLink,
+  forceSimulation,
+  Simulation,
+  SimulationNodeDatum,
+  SimulationLinkDatum,
+} from "d3-force";
+import Panzoom, { PanzoomObject, PanzoomOptions } from "@panzoom/panzoom";
+import { HaStateLabelBadge } from "../../../../../components/entity/ha-state-label-badge";
+import type { Grapher, GrapherZigPosition } from "./zha-grapher";
 import type { Zag } from "./zha-zag";
-import { ZagDisplayConfig } from "./zha-zag-display-config";
-import { ZigDisplayConfig } from "./zha-zig-display-config";
-
-interface ZigDatum extends d3.SimulationNodeDatum, Zig {}
-interface ZagDatum extends d3.SimulationLinkDatum<ZigDatum> {
+import type { Zig } from "./zha-zig";
+/**
+ * Convienience alias for using d3 types.
+ */
+interface ZigDatum extends SimulationNodeDatum, Zig {}
+/**
+ * Convienience alias for using d3 types.
+ */
+interface ZagDatum extends SimulationLinkDatum<ZigDatum> {
+  // Holds the svg element used to hold the Zig in the display.
+  svgG?: SVGGElement;
+  svgPath?: SVGPathElement;
+  // Some Zags are bidirectional, this array allows us to hold 1 or 2 for each ZagDatum.
   zags: Array<Zag>;
 }
 
-type ZigSelection = d3.Selection<SVGSVGElement, ZigDatum, d3.BaseType, null>;
-type ZagSelection = d3.Selection<SVGSVGElement, ZagDatum, d3.BaseType, null>;
-
-// Hold per instance info that can be passed into callbacks and static methods.
-interface D3SVG {
-  // Width of the container.
-  _width: number;
-  // Height of the container.
-  _height: number;
-  // Handle to the SVG element holding the graph.
-  _SVGContainer: SVGSVGElement;
-  // D3 selection of the contents of the outer SVG.
-  _outerSVGSelection: d3.Selection<d3.BaseType, null, null, undefined>;
-  // Handle to the <g> of class zigs.
-  _zigG: d3.Selection<d3.BaseType, null, null, undefined>;
-  // Handle to the <g> of class zags.
-  _zagG: d3.Selection<d3.BaseType, null, null, undefined>;
-  // The D3 datum array of zigs.
-  _d3ZigDatums: Array<ZigDatum>;
-  // The D3 datum array of zags.
-  _d3ZagDatums: Array<ZagDatum>;
-  // The D3 force simulation.
-  _simulation: d3.Simulation<ZigDatum, ZagDatum>;
-}
-
-// Various constants used to configure the D3 simulation
+/**
+ *  Various constants used to configure the D3 simulation
+ */
 const _d3AlphaRestartValue = 0.3;
 const _d3AlphaMin = 0.01;
 const _d3AlphaDecay = 0.04;
-const _d3RepelRadius = 2;
+const _d3RepelRadius = 200;
+// const _d3BoundaryBorder = 50;
 
+/**
+ *  Used to configure the class of a Zag element so it can be styled differently based on LQI.
+ 
+ */
+const thresholdLowerLQI = 100;
+const thresholdUpperLQI = 200;
+const zagLQIPoor = "zag-lqi-poor";
+const zagLQIModerate = "zag-lqi-moderate";
+const zagLQIGood = "zag-lqi-good";
+
+/**
+ * Uses part of the d3 javascript suite to calculate layouts of Zigs & Zags.
+ * The rendering of Zigs is left to Lovelace, the grapher updates the positions
+ * of Zigs using CSS left & top values.
+ * Zags are drawn from scratch using svg.
+ */
 export class D3Grapher implements Grapher {
-  private _d3svg = {} as D3SVG;
+  _d3ZagDatums: Array<ZagDatum> = [];
 
-  private static _iconSize = 48;
+  _d3ZigDatums: Array<ZigDatum> = [];
 
-  private static _zagDisplayConfig: ZagDisplayConfig;
+  _divContainer?: HTMLElement;
 
-  private static _zigDisplayConfig: ZigDisplayConfig;
+  _height: any;
 
-  constructor() {
-    this._d3svg._d3ZigDatums = [];
-    this._d3svg._d3ZagDatums = [];
-  }
+  _panzoom?: PanzoomObject;
 
-  // Return a color for the zag based on the LQI of the target zig.
-  private static _calcZagColor(lqi: number): string {
-    const thresholdScale = d3
-      .scaleThreshold<number, string>()
-      .domain([
-        this._zagDisplayConfig.thresholdLowerLQI,
-        this._zagDisplayConfig.thresholdMiddleLQI,
-        this._zagDisplayConfig.thresholdUpperLQI,
-      ])
-      .range([
-        this._zagDisplayConfig.colorLQIPoor,
-        this._zagDisplayConfig.colorLQIModerate,
-        this._zagDisplayConfig.colorLQIGood,
-        this._zagDisplayConfig.colorLQIExcellent,
-      ]);
-    // Ensure the color is of an acceptable format
-    return d3.color(thresholdScale(lqi))?.toString() as string;
-  }
+  _simulation?: Simulation<ZigDatum, undefined>;
 
-  // Return a color for the zig based on its device type.
-  private static _calcZigColor(deviceType: string): string {
-    switch (deviceType) {
-      case ZigRole.Coordinator:
-        return this._zigDisplayConfig.iconColorCoordinator;
+  // This is the SVGdotJS Dom.
+  _svgContainer?: SVGSVGElement;
 
-      case ZigRole.Router:
-        return this._zigDisplayConfig.iconColorRouter;
+  _width: any;
 
-      case ZigRole.EndDevice:
-        return this._zigDisplayConfig.iconColorEndDevice;
+  private _applySimulation() {
+    // If we do not have a simulation running then exit.
+    if (!this._simulation) {
+      return;
     }
 
-    return this._zigDisplayConfig.iconColorUnknown;
+    // We iterate through the Zigs.
+    this._d3ZigDatums.forEach((_zigD: ZigDatum) => {
+      if (_zigD.badge) {
+        // Constrain the Zig position to fall within the container.
+        this._constrainZigPosition(_zigD);
+        // Zigs are positioned using style absolute positioning.
+        this._updateZigPosition(_zigD);
+      }
+
+      // We iterate through the Zags, drawing them.
+      this._d3ZagDatums.forEach((_zagD) => {
+        this._updateZag(_zagD);
+      });
+    });
   }
 
-  // Return the icon name for the zig based on its device_type.
-  private static _calcZigIcon(deviceType: string): string {
-    switch (deviceType) {
-      case ZigRole.Coordinator:
-        return D3Grapher._zigDisplayConfig.iconNameCoordinator;
+  private _attachDrag() {
+    console.log("D3Grapher -> _attachDrag -> unimplemented");
+  }
 
-      case ZigRole.Router:
-        return D3Grapher._zigDisplayConfig.iconNameRouter;
+  private _attachMouseOver() {
+    //
+    this._d3ZigDatums.forEach((_zigD: ZigDatum) => {
+      if (_zigD.badge) {
+        _zigD.badge.onmouseover = (event) => this._handleMouseOver(event);
+        _zigD.badge.onmouseleave = (event) => this._handleMouseLeave(event);
+      }
+    });
+  }
 
-      case ZigRole.EndDevice:
-        return D3Grapher._zigDisplayConfig.iconNameEndDevice;
-    }
+  private _attachPanZoom() {
+    console.log("D3Grapher -> _attachPanZoom -> unimplemented");
+    /*     // Setup pan & zoom
+    this._panzoom = Panzoom(this._divContainer!, {
+      maxScale: 10,
+    }); */
+  }
 
-    return D3Grapher._zigDisplayConfig.iconNameUnknown;
+  private _biZagPath(zagD: ZagDatum): string {
+    // For a bi-zag, we draw two curves.
+    // We need to calculate the position of the control point with some fancy maths.
+    // Code adapted from https://stackoverflow.com/questions/49274176/how-to-create-a-curved-svg-path-between-two-points/49286885#49286885
+    const _source = zagD.source as ZigDatum;
+    const _target = zagD.target as ZigDatum;
+    // Distance of control point from mid-point of line:
+    const _offsetCP = 50;
+    // Calculate mid-point of the line between the two Zig.
+    const _mpx = (_source.x! + _target.x!) * 0.5;
+    const _mpy = (_source.y! + _target.y!) * 0.5;
+
+    // Calculate the angle of the perpendicular to this line:
+    const _theta =
+      Math.atan2(_target.y! - _source.y!, _target.x! - _source.x!) -
+      Math.PI / 2;
+
+    // Calculate the location of control points.
+    const _cp1x = _mpx + _offsetCP * Math.cos(_theta);
+    const _cp1y = _mpy + _offsetCP * Math.sin(_theta);
+    const _cp2x = _mpx - _offsetCP * Math.cos(_theta);
+    const _cp2y = _mpy - _offsetCP * Math.sin(_theta);
+
+    // Assemble the path for the two curved lines.
+    return `M${_source.x!},${_source.y!} Q${_cp1x},${_cp1y} ${_target.x!},${_target.y!} Q${_cp2x},${_cp2y} ${_source.x!},${_source.y!}`;
   }
 
   // Ensure a co-ordinate falls within a min & max
-  private static _constrainWithinBoundary(
+  private _constrainWithinBoundary(
     coordinate: number,
     low: number,
     high: number
@@ -119,7 +152,54 @@ export class D3Grapher implements Grapher {
     return Math.max(low, Math.min(high - low, coordinate));
   }
 
-  private static _createZagLabels(zagSelection: ZagSelection) {
+  private _constrainZigPosition(_zigD: ZigDatum) {
+    _zigD.x = this._constrainWithinBoundary(
+      _zigD.x as number,
+      _zigD.badge.clientWidth / 2,
+      this._width - _zigD.badge.clientWidth / 2
+    );
+
+    _zigD.y = this._constrainWithinBoundary(
+      _zigD.y as number,
+      _zigD.badge.clientWidth / 2,
+      this._height - _zigD.badge.clientWidth / 2
+    );
+  }
+
+  /**
+   *
+   * Create the Zag element structure.
+   * The actual path command is created later.
+   */
+  private _createZagElement(zagD: ZagDatum) {
+    // Create the common svg elements we need
+    const _svgG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const _svgPath = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "path"
+    );
+
+    this._svgContainer!.appendChild(_svgG);
+    _svgG.appendChild(_svgPath);
+
+    _svgG.classList.add("zag");
+    _svgPath.classList.add("zagpath");
+
+    // Set class based on LQI value.
+    let _lqiClass = zagLQIPoor;
+    if (zagD.zags[0].lqi_to > thresholdUpperLQI) {
+      _lqiClass = zagLQIGood;
+    } else if (zagD.zags[0].lqi_to > thresholdLowerLQI) {
+      _lqiClass = zagLQIModerate;
+    }
+    _svgPath.classList.add(_lqiClass);
+
+    // Store the elements in the Zag for easier reference when we update it.
+    zagD.svgPath = _svgPath;
+    zagD.svgG = _svgG;
+  }
+
+  private _createZagLabels(zagD: ZagDatum) {
     // Labels for uni zigs.
     // TODO - ensure the label orientation is correct.
     zagSelection
@@ -155,87 +235,62 @@ export class D3Grapher implements Grapher {
       .text((_zagD: ZagDatum) => _zagD.zags[1].relation);
   }
 
-  // Create single or double lines for zags.
-  private static _createZagLines(zagSelection: ZagSelection) {
-    // For all the zags with unidirectional links - uni-zags.
-    zagSelection
-      .filter((_zagD: ZagDatum) => _zagD.zags.length === 1)
-      .append<SVGPathElement>("path")
-      .classed("zag", true)
-      .attr("id", (_zagD: ZagDatum) => `zagPath-${_zagD.index}-uni`)
-      .style("stroke", (_zagD: ZagDatum) =>
-        D3Grapher._calcZagColor(_zagD.zags[0].lqi_to)
-      )
-      .style("fill", "none");
+  private _handleMouseLeave(event) {
+    const _badge: HaStateLabelBadge = event.currentTarget;
 
-    // For zags with bidirectional links - bi-zags.
-    zagSelection
-      .filter((_zagD: ZagDatum) => _zagD.zags.length === 2)
-      .append<SVGPathElement>("path")
-      .classed("zag", true)
-      .attr("id", (_zagD: ZagDatum) => `zagPath-${_zagD.index}-bi`)
-      .style("stroke", (_zagD: ZagDatum) =>
-        D3Grapher._calcZagColor(_zagD.zags[0].lqi_to)
-      )
-      .style("fill", "none");
+    _badge.parentElement!.classList.remove("dim");
+
+    this._d3ZagDatums.forEach((_zagD) => {
+      if ((_zagD.source as Zig).badge === _badge) {
+        _zagD.svgG?.classList.remove("highlight");
+        (_zagD.target as Zig).badge.classList.remove("highlight");
+      } else if ((_zagD.target as Zig).badge === _badge) {
+        _zagD.svgG?.classList.remove("highlight");
+        (_zagD.source as Zig).badge.classList.remove("highlight");
+      }
+    });
+
+    _badge.classList.remove("highlight");
   }
 
-  private static _createZigContents(zigSelection: ZigSelection) {
-    // Create a circular background for the zig.
-    // cx & cy are relative to the zig svg.
-    zigSelection
-      .append<SVGCircleElement>("circle")
-      .classed("zig-background", true)
-      .attr("r", D3Grapher._iconSize / 2 - 1)
-      .attr("cx", D3Grapher._iconSize / 2)
-      .attr("cy", D3Grapher._iconSize / 2);
+  /**
+   * mouseOver behaviour is to focus on the Zig.
+   * The Zig itself, all the connected Zags and the Zigs at the other end of the Zag
+   * are all highlighted.
+   * The other Zigs & Zags are dimmed.
+   * This is achieved by setting/resetting highlight & dim classes on various elements.
+   */
+  private _handleMouseOver(event) {
+    const _badge: HaStateLabelBadge = event.currentTarget;
+    // Highlight the current Zig.
+    _badge.classList.add("highlight");
 
-    // Create the zig icon.
-    zigSelection
-      .append<SVGUseElement>("use")
-      .classed("zig-icon", true)
-      .attr(
-        "href",
-        (zig: d3.SimulationNodeDatum) =>
-          "#icon-" + D3Grapher._calcZigIcon((zig as ZigDatum).device_type)
-      )
-      .style("fill", (zig: d3.SimulationNodeDatum) =>
-        D3Grapher._calcZigColor((zig as ZigDatum).device_type)
-      );
+    // Highlight any connected Zags and the Zig at the other end.
+    this._d3ZagDatums.forEach((_zagD) => {
+      if ((_zagD.source as Zig).badge === _badge) {
+        _zagD.svgG?.classList.add("highlight");
+        (_zagD.target as Zig).badge.classList.add("highlight");
+      } else if ((_zagD.target as Zig).badge === _badge) {
+        _zagD.svgG?.classList.add("highlight");
+        (_zagD.source as Zig).badge.classList.add("highlight");
+      }
+    });
 
-    // Create a hidden lock icon.
-    zigSelection
-      .append<SVGUseElement>("use")
-      .classed("zig-lock", true)
-      .attr("href", "#icon-mdi:lock")
-      .attr("x", D3Grapher._iconSize / 2)
-      .attr("y", D3Grapher._iconSize / 2)
-      .attr("visibility", "hidden");
-
-    // Create the zig label.
-    zigSelection
-      .append<SVGTextElement>("text")
-      .classed("zig-label", true)
-      .attr("dx", D3Grapher._iconSize / 2)
-      .attr("dy", D3Grapher._iconSize + 10)
-      .text((d: ZigDatum) => (d.user_given_name ? d.user_given_name : d.name))
-      .style("text-anchor", "middle");
+    // Dim everything else.
+    _badge.parentElement!.classList.add("dim");
   }
 
-  private static _importZigzags(
-    zigs: Array<Zig>,
-    zags: Array<Zag>,
-    d3svg: D3SVG
-  ) {
+  private _importData(zigs: Array<Zig>, zags: Array<Zag>) {
     // Create the zig & zag object structures d3 requires.
     zigs.forEach((_zig: Zig) => {
       // d3 requires a unique id for each ZigDatum so we will add it.
-      d3svg._d3ZigDatums.push({ ..._zig, id: _zig.ieee });
+      this._d3ZigDatums.push({ ..._zig, id: _zig.ieee });
     });
 
+    //
     zags.forEach((_zagToAdd: Zag) => {
       // Check to see if we already have a ZagDatum for the opposite direction
-      let _existingZagD: ZagDatum | undefined = d3svg._d3ZagDatums.find(
+      let _existingZagD: ZagDatum | undefined = this._d3ZagDatums.find(
         (_zagD: ZagDatum) =>
           _zagD.zags[0].from === _zagToAdd.to &&
           _zagD.zags[0].to === _zagToAdd.from
@@ -248,234 +303,106 @@ export class D3Grapher implements Grapher {
           target: _zagToAdd.to,
           zags: [],
         };
-        d3svg._d3ZagDatums.push(_existingZagD);
+        // Create a new ZagDatum and add to our collection
+        this._d3ZagDatums.push(_existingZagD);
       }
 
-      // Add the zag to the ZagDatum
+      // By now we have either found or added a new ZagDatum.
+      // We add the _zagToAdd to it.
       _existingZagD.zags.push(_zagToAdd);
     });
   }
 
-  private static _initaliseSimulation(d3svg: D3SVG) {
+  private _initSimulation() {
+    // If we have yet to receive the size of the bounding container, exit.
+    if (this._width === 0 || this._height === 0) {
+      return;
+    }
+
+    // clean up the old simulation if there is one.
+    if (this._simulation) {
+      this._simulation.stop();
+    }
+
     // Create and configure the d3 simulation/force model.
-    d3svg._simulation = d3
-      .forceSimulation(d3svg._d3ZigDatums)
-      .alphaMin(_d3AlphaMin)
+    this._simulation = forceSimulation(this._d3ZigDatums) // https://github.com/d3/d3-force
+      .alphaMin(_d3AlphaMin) // When alpha drops below this, the simulation stops.
       .alphaDecay(_d3AlphaDecay)
       .force(
+        "center",
+        forceCenter()
+          .x(this._width / 2)
+          .y(this._height / 2)
+      ) // Zigs will tend towards the centre. */ // Sets how much the alpha value drops per iteration of the simulation. // Zags have a spring-like force that pull Zigs together. // Zigs will repel one another.
+      .force(
         "link",
-        d3.forceLink(d3svg._d3ZagDatums).id((zig) => (zig as ZigDatum).id)
+        forceLink(this._d3ZagDatums).id((zig) => (zig as ZigDatum).id)
       )
-      .force("center", d3.forceCenter())
-      .force("repel", d3.forceCollide());
-
-    D3Grapher._updateForces(d3svg);
-  }
-
-  // Double clicking will unlock a zig.
-  private static _setupUnlockZig(zigSelection: ZigSelection) {
-    zigSelection.on("dblclick", (zigNode: ZigDatum) => {
-      // Clearing fx & fy removes its fixed position.
-      zigNode.fx = null;
-      zigNode.fy = null;
-
-      // Hide the lock icon.
-      zigSelection
-        .filter((zig) => zig === zigNode)
-        .select(".zig-lock")
-        .attr("visibility", "hidden");
+      .force("repel", forceCollide().radius(_d3RepelRadius).strength(1));
+    // When the simulation ticks, we update the positions of Zigs & Zags.
+    this._simulation.on("tick", () => {
+      this._applySimulation();
     });
   }
 
-  // Dragging a zig will modify the layout and also lock the zig into position.
-  private static _setupZigDrag(zigSelection: ZigSelection, d3svg: D3SVG) {
-    // Setup the drag event handlers for the zig.
-    zigSelection.call(
-      d3
-        .drag<SVGSVGElement, ZigDatum>()
-        .on("start", (_zigDtoDrag: ZigDatum) => {
-          // We set the fx & fy to stop the simulation shifting the zig.
-          _zigDtoDrag.fx = d3.event.x;
-          _zigDtoDrag.fy = d3.event.y;
-
-          // Unhide the lock icon.
-          zigSelection
-            .filter((_zigD: ZigDatum) => _zigD === _zigDtoDrag)
-            .select(".zig-lock")
-            .attr("visibility", "visible");
-        })
-        .on("drag", (_zigD: ZigDatum) => {
-          // As we drag, we want to update the fixed coordinates of the zig.
-          _zigD.fx = D3Grapher._constrainWithinBoundary(
-            d3.event.x,
-            D3Grapher._iconSize,
-            d3svg._width
-          );
-          _zigD.fy = D3Grapher._constrainWithinBoundary(
-            d3.event.y,
-            D3Grapher._iconSize,
-            d3svg._height
-          );
-
-          // We need to recalculate the layout by restarting the simulation.
-          d3svg._simulation.restart();
-        })
-        .on("end", () => {
-          d3svg._simulation.alpha(_d3AlphaRestartValue).restart();
-        })
-    );
+  private _uniZagPath(zagD: ZagDatum): string {
+    return `M${(zagD.source as ZigDatum).x as number},${
+      (zagD.source as ZigDatum).y as number
+    } L${(zagD.target as ZigDatum).x as number},${
+      (zagD.target as ZigDatum).y as number
+    }`;
   }
 
-  // Mousing over a zig will highlight the zig and any connected zigs & zags.
-  private static _setupZigMouseover(
-    zigSelection: ZigSelection,
-    zagSelection: ZagSelection,
-    d3svg: D3SVG
-  ) {
-    // Setup mouse highlight behaviour for the zigs.
-    zigSelection
-      .on("mouseenter", (zigNode: ZigDatum) => {
-        // Set highlight class on the zig
-        d3.select<SVGSVGElement, ZigDatum>(d3.event.currentTarget).classed(
-          "highlight",
-          true
-        );
+  private _updateSimulation() {
+    if (this._simulation !== undefined) {
+      this._simulation!.force<ForceCenter<ZigDatum>>("center")!
+        .x(this._width / 2)
+        .y(this._height / 2);
 
-        // Set highlight on any connected zags & the zig at the other end.
-        zagSelection
-          .filter((zagNode: ZagDatum) => {
-            if (zagNode.source === zigNode) {
-              zigSelection
-                .filter((zig) => zig === zagNode.target)
-                .classed("highlight", true);
-              return true;
-            }
-            if (zagNode.target === zigNode) {
-              zigSelection
-                .filter((zig) => zig === zagNode.source)
-                .classed("highlight", true);
-              return true;
-            }
-            return false;
-          })
-          .classed("highlight", true);
-        d3svg._zigG.classed("dim", true); //  Dim everything that is not highlight.
-        d3svg._zagG.classed("dim", true); //  Dim everything that is not highlight.
-      })
-
-      .on("mouseleave", () => {
-        // Clear highlight class on everything
-        d3svg._outerSVGSelection
-          .selectAll(".highlight")
-          .classed("highlight", false);
-        d3svg._zigG.classed("dim", false); //  Undim everything.
-        d3svg._zagG.classed("dim", false); //  Undim everything.
-      });
-  }
-
-  private static _updateForces(d3svg: D3SVG) {
-    if (d3svg._simulation !== undefined) {
-      d3svg._simulation
-        .force<d3.ForceCenter<ZigDatum>>("center")
-        ?.x(d3svg._width / 2)
-        .y(d3svg._height / 2);
-
-      d3svg._simulation
-        .force<d3.ForceCollide<ZigDatum>>("repel")
-        ?.radius(D3Grapher._iconSize * _d3RepelRadius);
-
-      d3svg._simulation.alpha(_d3AlphaRestartValue).restart();
+      this._simulation.alpha(_d3AlphaRestartValue).restart();
+    } else {
+      this._initSimulation();
     }
   }
 
-  // Update the positions of all the zags.
-  private static _updatePositionOfZags(zagSelection: ZagSelection) {
-    // distance of control point from mid-point of line:
-    const _offsetCP = 50;
+  private _updateZag(zagD: ZagDatum): void {
+    const _isBiZag: boolean = zagD.zags.length === 2;
 
-    zagSelection.select("path").attr("d", (_zagD: ZagDatum) => {
-      // If we have two zags then it is a bi-zag so we draw two curves.
-      if (_zagD.zags.length === 2) {
-        // We need to calculate the position of the control point
-        // adapted from https://stackoverflow.com/questions/49274176/how-to-create-a-curved-svg-path-between-two-points/49286885#49286885
+    // Generate the svg path.
+    const _path = _isBiZag ? this._biZagPath(zagD) : this._uniZagPath(zagD);
 
-        // mid-point of line
-        const _mpx =
-          (((_zagD.source as ZigDatum).x as number) +
-            ((_zagD.target as ZigDatum).x as number)) *
-          0.5;
-        const _mpy =
-          (((_zagD.source as ZigDatum).y as number) +
-            ((_zagD.target as ZigDatum).y as number)) *
-          0.5;
+    // We add or update the SVG path element for the Zag.
+    // If the Zag has no existing path element, then create one.
+    if (zagD.svgG === undefined) {
+      this._createZagElement(zagD);
+    }
+    zagD.svgPath!.setAttribute(
+      "id",
+      `${zagD.index}-${_isBiZag ? "bi" : "uni"}`
+    );
+    zagD.svgPath!.setAttribute("d", _path);
 
-        // angle of perpendicular to line:
-        const _theta =
-          Math.atan2(
-            ((_zagD.target as ZigDatum).y as number) -
-              ((_zagD.source as ZigDatum).y as number),
-            ((_zagD.target as ZigDatum).x as number) -
-              ((_zagD.source as ZigDatum).x as number)
-          ) -
-          Math.PI / 2;
-
-        // location of control point:
-        const _cp1x = _mpx + _offsetCP * Math.cos(_theta);
-        const _cp1y = _mpy + _offsetCP * Math.sin(_theta);
-        const _cp2x = _mpx - _offsetCP * Math.cos(_theta);
-        const _cp2y = _mpy - _offsetCP * Math.sin(_theta);
-
-        return `M${(_zagD.source as ZigDatum).x as number},${
-          (_zagD.source as ZigDatum).y as number
-        } Q${_cp1x},${_cp1y} ${(_zagD.target as ZigDatum).x as number},${
-          (_zagD.target as ZigDatum).y as number
-        } Q${_cp2x},${_cp2y} ${(_zagD.source as ZigDatum).x as number},${
-          (_zagD.source as ZigDatum).y as number
-        }`;
-      }
-
-      // Otherwise it is a uni zag we draw a single straight line.
-      return `M${(_zagD.source as ZigDatum).x as number},${
-        (_zagD.source as ZigDatum).y as number
-      } L${(_zagD.target as ZigDatum).x as number},${
-        (_zagD.target as ZigDatum).y as number
-      }`;
-    });
+    // Add the labels.
   }
 
-  // Update the positions of all the zigs.
-  private static _updatePositionOfZigs(
-    zigSelection: ZigSelection,
-    d3svg: D3SVG
-  ) {
-    // x & y for the zig container (svg) are offset by half the icon size to allow
-    // all the elements within the svg to be drawn using +ve coordinates.
-    zigSelection
-      .attr("x", (zigNode: ZigDatum) => {
-        // Ensure d.x does not fall outside the boundary.
-        zigNode.x = D3Grapher._constrainWithinBoundary(
-          zigNode.x as number,
-          D3Grapher._iconSize,
-          d3svg._width
-        );
-        return zigNode.x - D3Grapher._iconSize / 2;
-      })
-      .attr("y", (zigNode: ZigDatum) => {
-        // Ensure d.y does not fall outside the boundary.
-        zigNode.y = D3Grapher._constrainWithinBoundary(
-          zigNode.y as number,
-          D3Grapher._iconSize,
-          d3svg._height
-        );
-        return zigNode.y - D3Grapher._iconSize / 2;
-      });
+  /**
+   * Apply the position of the Zag by adjusting the style top & left of its badge element.
+   *
+   */
+  private _updateZigPosition(_zigD: ZigDatum) {
+    _zigD.badge.setAttribute(
+      "style",
+      `position: absolute; top: ${
+        _zigD.y! - _zigD.badge.clientWidth / 2
+      }px; left: ${_zigD.x! - _zigD.badge.clientWidth / 2}px`
+    );
   }
 
   // Provide the layout data, intended to be used to persist the layout externally.
-  public extractLayout(): Array<GrapherLayout> {
+  public extractPositions(): Array<GrapherZigPosition> {
     // Return the coordinates of all locked zigs.
-    const _zigLayout: Array<GrapherLayout> = [];
-    this._d3svg._d3ZigDatums.forEach((_zigD: ZigDatum) => {
+    const _zigLayout: Array<GrapherZigPosition> = [];
+    this._d3ZigDatums.forEach((_zigD: ZigDatum) => {
       // if fx & fy then the zig is locked and we will include it in the returned layout data.
       if (_zigD.fx && _zigD.fy) {
         _zigLayout.push({ id: _zigD.id, x: _zigD.fx, y: _zigD.fy });
@@ -484,11 +411,22 @@ export class D3Grapher implements Grapher {
     return _zigLayout;
   }
 
+  public injectData(zigsIn: Array<Zig>, zagsIn: Array<Zag>): void {
+    this._importData(zigsIn, zagsIn);
+
+    this._attachMouseOver();
+    this._attachDrag();
+    this._attachPanZoom();
+
+    // Setup the force simulation.
+    this._initSimulation();
+  }
+
   // Inject the layout data and update zigs.
-  public injectLayout(layout: Array<GrapherLayout>): void {
+  public injectPositions(layout: Array<GrapherZigPosition>): void {
     try {
       for (const _zigPosition of layout) {
-        const _zigToLock: ZigDatum | undefined = this._d3svg._d3ZigDatums!.find(
+        const _zigToLock: ZigDatum | undefined = this._d3ZigDatums!.find(
           (_zigD) => _zigD.id === _zigPosition.id
         );
         // If we have found the zig.
@@ -499,17 +437,10 @@ export class D3Grapher implements Grapher {
         }
       }
 
-      // Show the locked indicator for all locked zigs.
-      this._d3svg._zigG
-        .selectAll<SVGSVGElement, ZigDatum>(".zig")
-        .filter(
-          (_zigD: ZigDatum) => _zigD.fx !== undefined && _zigD.fx !== null
-        )
-        .select(".zig-lock")
-        .attr("visibility", "visible");
-
       // Restart the simulation so that the graph is redrawn.
-      this._d3svg._simulation.alpha(_d3AlphaRestartValue).restart();
+      if (this._simulation) {
+        this._simulation.alpha(_d3AlphaRestartValue).restart();
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.log(
@@ -522,104 +453,27 @@ export class D3Grapher implements Grapher {
 
   // If the container has been resized we need to modify some of the simulation settings and restart.
   public resize(): void {
-    if (this._d3svg._outerSVGSelection) {
-      const _newWidth = this._d3svg._SVGContainer.getBoundingClientRect().width;
-      const _newHeight = this._d3svg._SVGContainer.getBoundingClientRect()
-        .height;
+    const _newWidth = this._divContainer!.getBoundingClientRect().width;
+    const _newHeight = this._divContainer!.getBoundingClientRect().height;
 
-      if (
-        this._d3svg._width !== _newWidth ||
-        this._d3svg._height !== _newHeight
-      ) {
-        this._d3svg._width = _newWidth;
-        this._d3svg._height = _newHeight;
-
-        if (this._d3svg._simulation) {
-          D3Grapher._updateForces(this._d3svg);
-        }
-      }
+    if (this._width !== _newWidth || this._height !== _newHeight) {
+      this._width = _newWidth;
+      this._height = _newHeight;
+      this._updateSimulation();
     }
   }
 
-  // TODO - Modify so that the existing zig & zags are updated rather than rebuilt.
-  public setData(zigsIn: Array<Zig>, zagsIn: Array<Zag>): void {
-    D3Grapher._importZigzags(zigsIn, zagsIn, this._d3svg);
+  // Set the HTML container that contains the elements the Grapher will position.
+  public setContainer(divContainer: HTMLElement): void {
+    this._divContainer = divContainer;
+    this._width = this._divContainer.getBoundingClientRect().width;
+    this._height = this._divContainer.getBoundingClientRect().height;
 
-    // Setup the force simulation.
-    D3Grapher._initaliseSimulation(this._d3svg);
-
-    // d3.join the zags to the zag data.
-    // Each Zag is joined to an svg element.
-    // We do not need to set the coordinate attributes as these will be applied in the simulation tick.
-    const _zagSelection: ZagSelection = this._d3svg._zagG
-      .selectAll<SVGSVGElement, ZagDatum>(".zag")
-      .data<ZagDatum>(this._d3svg._d3ZagDatums)
-      .join<SVGSVGElement>("svg")
-      .classed("zag", true);
-
-    _zagSelection.call(D3Grapher._createZagLines);
-
-    _zagSelection.call(D3Grapher._createZagLabels);
-
-    // d3.join the zigs to the zig data.
-    // Each zig is joined to an svg use element.
-    // We do not need to set the coordinate attributes as these will be applied in the simulation tick.
-    const _zigSelection: ZigSelection = this._d3svg._zigG
-      .selectAll<SVGSVGElement, ZigDatum>(".zig")
-      .data<ZigDatum>(this._d3svg._d3ZigDatums, (_zig: ZigDatum) => _zig.id)
-      .join<SVGSVGElement>("svg")
-      .classed("zig", true);
-
-    // Add the background, icon and label to zigs.
-    _zigSelection.call(D3Grapher._createZigContents);
-
-    // Un stick a zig when we double click on it.
-    _zigSelection.call(D3Grapher._setupUnlockZig);
-
-    // Setup the zig mouseover -> highlighting event handling.
-    _zigSelection.call(
-      D3Grapher._setupZigMouseover,
-      _zagSelection,
-      this._d3svg
+    this._svgContainer = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "svg"
     );
-
-    // Setup the drag event handling.
-    _zigSelection.call(D3Grapher._setupZigDrag, this._d3svg);
-
-    // When the simulation ticks, we update the zigs & zags.
-    if (this._d3svg._simulation)
-      this._d3svg._simulation.on("tick", () => {
-        _zigSelection.call(D3Grapher._updatePositionOfZigs, this._d3svg);
-        _zagSelection.call(D3Grapher._updatePositionOfZags, this._d3svg);
-      });
-  }
-
-  // Set the SVG container that the Grapher will render into.
-  public setSVGContainer(container: SVGSVGElement): void {
-    this._d3svg._SVGContainer = container;
-
-    // D3 select the grapher container.
-    this._d3svg._outerSVGSelection = d3.select(container as d3.BaseType);
-
-    // Store the initial size of our container.
-    this._d3svg._width = container.getBoundingClientRect().width;
-    this._d3svg._height = container.getBoundingClientRect().height;
-
-    this._d3svg._zagG = this._d3svg._outerSVGSelection
-      .append("g" as string)
-      .classed("zags", true);
-
-    this._d3svg._zigG = this._d3svg._outerSVGSelection
-      .append("g" as string)
-      .classed("zigs", true);
-  }
-
-  // Update the display configuration.
-  public updateConfig(
-    zigDisplayConfig: ZigDisplayConfig,
-    zagDisplayConfig: ZagDisplayConfig
-  ): void {
-    D3Grapher._zigDisplayConfig = zigDisplayConfig;
-    D3Grapher._zagDisplayConfig = zagDisplayConfig;
+    divContainer.appendChild(this._svgContainer);
+    this._svgContainer.setAttribute("class", "zags");
   }
 }

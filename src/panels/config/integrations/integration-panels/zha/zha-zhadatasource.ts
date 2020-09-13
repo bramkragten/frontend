@@ -125,6 +125,9 @@ export class ZHADataSource implements DataSource {
         device_reg_id: device.device_reg_id,
         power_source: device.power_source,
         area_id: device.area_id,
+        primary_entity: device.entities.length
+          ? device.entities[0].entity_id
+          : "binary_sensor.updater", // TODO Remove this horrible hack when entities are sorted for all zha zigbee devices
       } as unknown) as Zig);
     }
   }
@@ -136,12 +139,15 @@ export class ZHADataSource implements DataSource {
     });
 
     this._mapZigs(zhaDevices, zigs);
+    try {
+      const zhaMapNeighbors = await this._hass.callWS<ZHAMAPResponse>({
+        type: ZHA_MAP_DEVICES_REQUEST,
+      });
 
-    const zhaMapNeighbors = await this._hass.callWS<ZHAMAPResponse>({
-      type: ZHA_MAP_DEVICES_REQUEST,
-    });
-
-    this._mapZags(zhaMapNeighbors, zigs, zags);
+      this._mapZags(zhaMapNeighbors, zigs, zags);
+    } catch (err) {
+      // TODO If zha-map is not installed, warn the user.
+    }
 
     return true;
   }

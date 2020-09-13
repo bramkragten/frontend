@@ -81,8 +81,27 @@
     "@typescript-eslint/no-non-null-assertion": 0,
     "@typescript-eslint/no-explicit-any": 0,
     "@typescript-eslint/no-unused-vars": 0,
-    "@typescript-eslint/explicit-function-return-type": 0
+    "@typescript-eslint/explicit-function-return-type": 0,
+    "sort-class-members/sort-class-members": [
+      2,
+      {
+        "order": ["[properties-sort]", "[constructor]", "[methods-sort]"],
+        "groups": {
+          "properties-sort": [{ "type": "property", "sort": "alphabetical" }],
+          "methods-sort": [{ "type": "method", "sort": "alphabetical" }]
+        },
+        "accessorPairPositioning": "getThenSet",
+        "stopAfterFirstProblem": false
+      }
+    ]
   },
-  "plugins": ["disable", "import", "lit", "prettier", "@typescript-eslint"],
+  "plugins": [
+    "disable",
+    "import",
+    "lit",
+    "prettier",
+    "@typescript-eslint",
+    "sort-class-members"
+  ],
   "processor": "disable/disable"
 }
